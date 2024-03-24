@@ -48,6 +48,7 @@ pub enum DamusState {
 }
 
 pub enum LoginState {
+    Clearing,
     LoggingIn(LoginManager),
     AcquiredLogin(Keys),
 }
@@ -518,6 +519,19 @@ impl Damus {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.state = DamusState::Initializing;
+        self.login_state = LoginState::LoggingIn(LoginManager::new());
+        self.pool = RelayPool::new();
+        // self.image_cache not cleared
+        self.note_cache = HashMap::new();
+        self.timelines = vec![];
+        // self.ndb not cleared
+        // self.ndb = Ndb::new(, &config).expect("ndb");
+        self.compose = "".to_string();
+        self.frame_history = FrameHistory::default();
+    }
+
     pub fn get_note_cache_mut(&mut self, note_key: NoteKey, created_at: u64) -> &mut NoteCache {
         self.note_cache
             .entry(note_key)
@@ -837,6 +851,9 @@ fn render_panel<'a>(ctx: &egui::Context, app: &'a mut Damus, timeline_ind: usize
             ui.visuals_mut().button_frame = false;
             egui::widgets::global_dark_light_mode_switch(ui);
 
+            if ui.add(egui::Button::new("Logout").frame(false)).clicked() {
+                app.login_state = LoginState::Clearing;
+            }
             /*
             if ui
                 .add(egui::Button::new("+").frame(false))
@@ -994,11 +1011,9 @@ fn account_login_panel(ctx: &egui::Context, login_manager: &mut LoginManager) {
                     }
                 }
                 if let Some(err) = &login_manager.error {
-                    ui.horizontal(|ui| {
-                        match err {
-                            LoginError::InvalidKey => ui.label(RichText::new("Invalid key.").color(Color32::RED)),
-                            LoginError::Nip05Failed(e) => ui.label(RichText::new(e).color(Color32::RED))
-                        }
+                    ui.horizontal(|ui| match err {
+                        LoginError::InvalidKey => ui.label(RichText::new("Invalid key.").color(Color32::RED)),
+                        LoginError::Nip05Failed(e) => ui.label(RichText::new(e).color(Color32::RED)),
                     });
                 }
             },
@@ -1068,15 +1083,17 @@ impl eframe::App for Damus {
                                         key.public_key().to_hex(),
                                     )]));
                                 self.login_state = LoginState::AcquiredLogin(key);
-                            }
+                            },
                             Err(e) => {
                                 login_manager.error = Some(e);
                                 login_manager.key_on_error = Some(login_manager.login_key.clone());
-                            },
+                            }
                         };
                     }
                 }
             }
+        } else if let LoginState::Clearing = &self.login_state {
+            self.clear();
         } else {
             update_damus(self, ctx);
             render_damus(self, ctx);
