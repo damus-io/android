@@ -12,6 +12,7 @@ use crate::widgets::note::NoteContents;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
 use std::borrow::Cow;
+use std::fs;
 
 use egui::widgets::Spinner;
 use egui::{
@@ -450,15 +451,21 @@ impl Damus {
 
         let mut timelines: Vec<Timeline> = vec![];
         let initial_limit = 100;
+        let queries_json_path = "queries/global.json";
+
         if args.len() > 1 {
             for arg in &args[1..] {
                 let filter = serde_json::from_str(&arg).unwrap();
                 timelines.push(Timeline::new(filter));
             }
-        } else {
-            let filter = serde_json::from_str(&include_str!("../queries/global.json")).unwrap();
+        } else if Path::new(queries_json_path).exists() {
+            let file_content = fs::read_to_string(queries_json_path).expect("Failed to read file");
+            let filter = serde_json::from_str(&file_content).expect("Failed to deserialize");
+
             timelines.push(Timeline::new(filter));
             //vec![get_home_filter(initial_limit)]
+        } else {
+            panic!("No timelines to load.");
         };
 
         let imgcache_dir = data_path.as_ref().join("cache/img");
