@@ -1062,7 +1062,11 @@ impl eframe::App for Damus {
                     if let Some(promise) = login_manager.promise.take() {
                         match promise.block_and_take() {
                             Ok(key) => {
-                                self.timelines.push(Timeline::new(vec!(get_filter_for_pubkey(100, key.public_key().to_hex()))));
+                                self.timelines
+                                    .push(Timeline::new(vec![get_filter_for_pubkey(
+                                        100,
+                                        key.public_key().to_hex(),
+                                    )]));
                                 self.login_state = LoginState::AcquiredLogin(key);
                             }
                             Err(e) => {
@@ -1076,6 +1080,26 @@ impl eframe::App for Damus {
         } else {
             update_damus(self, ctx);
             render_damus(self, ctx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr_sdk::PublicKey;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_serialize() {
+        let expect_json = "[{\"kinds\":[1,42],\"#p\":[\"9717fdf26e6e8fdc668c8d97f77b81004b752815d0f56c4a608b55aa2ec76385\"],\"limit\":100}]";
+        let pubkey_str = "npub1jutlmunwd68ace5v3ktlw7upqp9h22q46r6kcjnq3d265tk8vwzsl2l532";
+        let key = PublicKey::from_str(pubkey_str).expect("Shouldn't error");
+        let filter = vec!(get_filter_for_pubkey(100, key.to_hex()));
+
+        match serde_json::to_string(&filter) {
+            Ok(serialized_string) => assert_eq!(expect_json, serialized_string),
+            Err(e) => panic!("{e}")
         }
     }
 }
