@@ -18,6 +18,12 @@ mod frame_history;
 mod timeline;
 mod colors;
 mod profile;
+mod key_parsing;
+mod login_manager;
+
+#[cfg(test)]
+#[macro_use]
+mod test_utils;
 
 pub use app::Damus;
 pub use error::Error;
