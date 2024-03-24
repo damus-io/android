@@ -1,5 +1,5 @@
-use std::str::FromStr;
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use crate::Error;
 use ehttp::{Request, Response};
@@ -32,9 +32,7 @@ pub struct Nip05Result {
 
 fn parse_nip05_response(response: Response) -> Result<Nip05Result, Error> {
     serde_json::from_slice::<Nip05Result>(&response.bytes)
-        .map_err(|e| {
-            Error::Generic(e.to_string())
-        })
+        .map_err(|e| Error::Generic(e.to_string()))
 }
 
 fn get_pubkey_from_result(result: Nip05Result, user: String) -> Result<PublicKey, Error> {
@@ -231,5 +229,29 @@ mod tests {
 
         let res = login_key_result.block_and_take().expect("Should not error");
         assert_eq!(expected_pubkey, res);
+    }
+
+    #[test]
+    fn test_pubkey_gen() {
+        let asserted_pubkey = "npub1jutlmunwd68ace5v3ktlw7upqp9h22q46r6kcjnq3d265tk8vwzsl2l532";
+        let expected_pubkey_hex = "9717fdf26e6e8fdc668c8d97f77b81004b752815d0f56c4a608b55aa2ec76385";
+
+        assert_eq!(
+            expected_pubkey_hex,
+            PublicKey::from_str(asserted_pubkey).expect("Shouldn't error").to_hex()
+        )
+    }
+
+    #[test]
+    fn test_keys_gen() {
+        let nsec = "nsec1pcl76tnpes3kwcgk92ph3kdj2vwuf4k2qt5fkal3vuk866tr57xqzkm6ku";
+        let expected_pubkey_hex = "9717fdf26e6e8fdc668c8d97f77b81004b752815d0f56c4a608b55aa2ec76385";
+        let asserted_secret_key = SecretKey::from_str(nsec).expect("Should not error");
+        let asserted_keys = Keys::new(asserted_secret_key);
+
+        assert_eq!(
+            expected_pubkey_hex.to_string(),
+            asserted_keys.public_key().to_hex()
+        );
     }
 }
