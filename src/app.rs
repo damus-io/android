@@ -5,12 +5,17 @@ use crate::fonts::{setup_fonts, NamedFontFamily};
 use crate::frame_history::FrameHistory;
 use crate::images::fetch_img;
 use crate::imgcache::ImageCache;
+use crate::key_parsing::perform_key_retrieval;
+use crate::key_parsing::LoginError;
+use crate::login_manager::LoginManager;
 use crate::notecache::NoteCache;
 use crate::timeline;
 use crate::ui::padding;
 use crate::widgets::note::NoteContents;
 use crate::Result;
 use egui::containers::scroll_area::ScrollBarVisibility;
+use egui::Layout;
+use nostr_sdk::PublicKey;
 use std::borrow::Cow;
 use std::fs;
 
@@ -21,6 +26,7 @@ use egui::{
 };
 
 use enostr::{ClientMessage, Filter, Pubkey, RelayEvent, RelayMessage};
+use nostr_sdk::Keys;
 use nostrdb::{
     Block, BlockType, Blocks, Config, Mention, Ndb, Note, NoteKey, ProfileRecord, Subscription,
     Transaction,
@@ -39,6 +45,11 @@ use enostr::RelayPool;
 pub enum DamusState {
     Initializing,
     Initialized,
+}
+
+pub enum LoginState {
+    LoggingIn(LoginManager),
+    AcquiredLogin(Keys),
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -86,6 +97,7 @@ impl Timeline {
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct Damus {
     state: DamusState,
+    login_state: LoginState,
     compose: String,
 
     note_cache: HashMap<NoteKey, NoteCache>,
@@ -135,6 +147,13 @@ fn get_home_filter(limit: u16) -> Filter {
         ]
         .into(),
     )
+}
+
+fn get_filter_for_pubkey(limit: u16, pubkey_hex: String) -> Filter {
+    Filter::new()
+        .limit(limit)
+        .kinds(vec![1, 42])
+        .pubkeys([Pubkey::from_hex(pubkey_hex.as_str()).unwrap()].into())
 }
 
 fn send_initial_filters(damus: &mut Damus, relay_url: &str) {
@@ -452,6 +471,7 @@ impl Damus {
         let mut timelines: Vec<Timeline> = vec![];
         let initial_limit = 100;
         let queries_json_path = "queries/global.json";
+        let mut initial_pubkey: Option<PublicKey> = None;
 
         if args.len() > 1 {
             for arg in &args[1..] {
@@ -460,21 +480,34 @@ impl Damus {
             }
         } else if Path::new(queries_json_path).exists() {
             let file_content = fs::read_to_string(queries_json_path).expect("Failed to read file");
-            let filter = serde_json::from_str(&file_content).expect("Failed to deserialize");
+            let filter: Vec<Filter> = serde_json::from_str(&file_content).expect("Failed to deserialize");
+            initial_pubkey = filter.iter()
+            .filter_map(|f| f.pubkeys.as_ref())
+            .flat_map(|pubkeys| pubkeys.iter())
+            .next()
+            .and_then(|pubkey| PublicKey::from_hex(pubkey.hex()).ok());
 
             timelines.push(Timeline::new(filter));
+
             //vec![get_home_filter(initial_limit)]
-        } else {
-            panic!("No timelines to load.");
-        };
+        }
 
         let imgcache_dir = data_path.as_ref().join("cache/img");
         std::fs::create_dir_all(imgcache_dir.clone());
+
+        let login_state = initial_pubkey
+            .map(|key| {
+                let keys = Keys::from_public_key(key);
+                LoginState::AcquiredLogin(keys)
+            })
+            .unwrap_or_else(|| LoginState::LoggingIn(LoginManager::new()));
+    
 
         let mut config = Config::new();
         config.set_ingester_threads(2);
         Self {
             state: DamusState::Initializing,
+            login_state,
             pool: RelayPool::new(),
             img_cache: ImageCache::new(imgcache_dir),
             note_cache: HashMap::new(),
@@ -935,6 +968,44 @@ fn render_damus_desktop(ctx: &egui::Context, app: &mut Damus) {
     });
 }
 
+fn account_login_panel(ctx: &egui::Context, login_manager: &mut LoginManager) {
+    main_panel(&ctx.style()).show(ctx, |ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(ctx.screen_rect().width(), ctx.screen_rect().height()),
+            Layout::from_main_dir_and_cross_align(
+                egui::Direction::LeftToRight,
+                egui::Align::Center,
+            ),
+            |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut login_manager.login_key)
+                        .hint_text("Enter login key"),
+                );
+                if ui.button("Submit").clicked() {
+                    login_manager.promise = Some(perform_key_retrieval(&login_manager.login_key));
+                }
+                if login_manager.promise.is_some() {
+                    ui.add(egui::Spinner::new());
+                }
+                if let Some(error_key) = &login_manager.key_on_error {
+                    if login_manager.login_key != *error_key {
+                        login_manager.error = None;
+                        login_manager.key_on_error = None;
+                    }
+                }
+                if let Some(err) = &login_manager.error {
+                    ui.horizontal(|ui| {
+                        match err {
+                            LoginError::InvalidKey => ui.label(RichText::new("Invalid key.").color(Color32::RED)),
+                            LoginError::Nip05Failed(e) => ui.label(RichText::new(e).color(Color32::RED))
+                        }
+                    });
+                }
+            },
+        );
+    });
+}
+
 fn postbox(ui: &mut egui::Ui, app: &mut Damus) {
     let _output = egui::TextEdit::multiline(&mut app.compose)
         .hint_text("Type something!")
@@ -982,7 +1053,29 @@ impl eframe::App for Damus {
 
         #[cfg(feature = "profiling")]
         puffin::GlobalProfiler::lock().new_frame();
-        update_damus(self, ctx);
-        render_damus(self, ctx);
+
+        if let LoginState::LoggingIn(login_manager) = &mut self.login_state {
+            account_login_panel(ctx, login_manager);
+
+            if let Some(promise) = &mut login_manager.promise {
+                if promise.ready().is_some() {
+                    if let Some(promise) = login_manager.promise.take() {
+                        match promise.block_and_take() {
+                            Ok(key) => {
+                                self.timelines.push(Timeline::new(vec!(get_filter_for_pubkey(100, key.public_key().to_hex()))));
+                                self.login_state = LoginState::AcquiredLogin(key);
+                            }
+                            Err(e) => {
+                                login_manager.error = Some(e);
+                                login_manager.key_on_error = Some(login_manager.login_key.clone());
+                            },
+                        };
+                    }
+                }
+            }
+        } else {
+            update_damus(self, ctx);
+            render_damus(self, ctx);
+        }
     }
 }
